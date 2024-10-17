@@ -91,12 +91,6 @@ const Column = struct {
     }
 };
 
-const ArchetypeRecord = struct {
-    column: usize,
-};
-
-const ArchetypeMap = std.AutoHashMapUnmanaged(ArchetypeID, ArchetypeRecord);
-
 pub fn ECS(comptime components: []const type) type {
     const N = components.len + 1;
 
@@ -123,9 +117,6 @@ pub fn ECS(comptime components: []const type) type {
             BitsetContext,
             std.hash_map.default_max_load_percentage,
         ) = .{},
-
-        /// Find the archetypes for a component
-        component_index: std.AutoHashMapUnmanaged(ComponentID, ArchetypeMap) = .{},
 
         allocator: std.mem.Allocator,
 
@@ -233,7 +224,6 @@ pub fn ECS(comptime components: []const type) type {
 
             self.entity_index.deinit(self.allocator);
             self.archetype_index.deinit(self.allocator);
-            self.component_index.deinit(self.allocator);
         }
 
         pub fn newEntity(self: *Self) !EntityID {
