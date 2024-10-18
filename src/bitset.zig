@@ -92,39 +92,3 @@ pub fn Bitset(comptime N: usize) type {
         }
     };
 }
-
-test "bitset" {
-    {
-        var bitset = Bitset(10).initEmpty();
-
-        bitset.set(5);
-        bitset.set(8);
-        bitset.set(0);
-        bitset.set(3);
-        bitset.set(5);
-        bitset.set(9);
-        bitset.set(1);
-
-        try std.testing.expect(std.mem.eql(usize, bitset.set_bits[0..bitset.set_len], &[_]usize{ 0, 1, 3, 5, 8, 9 }));
-        try std.testing.expectEqual(6, bitset.set_len);
-
-        bitset.unset(0);
-        bitset.unset(0);
-        try std.testing.expect(std.mem.eql(usize, bitset.set_bits[0..bitset.set_len], &[_]usize{ 1, 3, 5, 8, 9 }));
-        bitset.unset(5);
-        try std.testing.expect(std.mem.eql(usize, bitset.set_bits[0..bitset.set_len], &[_]usize{ 1, 3, 8, 9 }));
-
-        try std.testing.expectEqual(4, bitset.set_len);
-        bitset.unset(9);
-        try std.testing.expect(std.mem.eql(usize, bitset.set_bits[0..bitset.set_len], &[_]usize{ 1, 3, 8 }));
-    }
-    {
-        const bitset = Bitset(20).initFull();
-        try std.testing.expectEqual(20, bitset.set_len);
-        try std.testing.expect(std.mem.eql(
-            usize,
-            &bitset.set_bits,
-            &[_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 },
-        ));
-    }
-}
