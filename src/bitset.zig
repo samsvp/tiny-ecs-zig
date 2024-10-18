@@ -81,6 +81,15 @@ pub fn Bitset(comptime N: usize) type {
         pub fn isSet(self: Self, i: usize) bool {
             return i < N and self.bitset[i];
         }
+
+        pub fn isOtherSubset(self: Self, other: Bitset(N)) bool {
+            if (self.set_len < other.set_len) return false;
+
+            for (other.set_bits[0..other.set_len]) |b| {
+                if (!self.isSet(b)) return false;
+            }
+            return true;
+        }
     };
 }
 

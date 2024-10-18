@@ -1,7 +1,7 @@
 const std = @import("std");
 const Bitset = @import("bitset.zig").Bitset;
 
-const EntityID = usize;
+pub const EntityID = usize;
 const ComponentID = usize;
 const ArchetypeID = usize;
 
@@ -283,6 +283,12 @@ pub fn ECS(comptime components: []const type) type {
                     .Pointer => |info| info.child,
                     else => @TypeOf(v),
                 };
+
+                if (T == EntityID) {
+                    values[i] = entity;
+                    continue;
+                }
+
                 const component_index = getComponentIndex(T) orelse
                     return error.ComponentNotPresent;
                 const c = archetype.columns.getPtr(component_index) orelse
@@ -305,30 +311,45 @@ pub fn ECS(comptime components: []const type) type {
         ) !void {
             var values: std.meta.ArgsTuple(@TypeOf(callback)) = undefined;
             var archetype_iters = self.archetype_index.valueIterator();
-            blk: while (archetype_iters.next()) |archetype| {
-                var rows: usize = undefined;
-                inline for (values) |v| {
-                    const type_info = @typeInfo(@TypeOf(v));
-                    const T = switch (type_info) {
-                        .Pointer => |info| info.child,
-                        else => @TypeOf(v),
-                    };
-                    const component_index = getComponentIndex(T) orelse
-                        return error.ComponentNotPresent;
-                    const c = archetype.columns.getPtr(component_index) orelse
-                        continue :blk;
-                    rows = c.count;
+
+            var bitset = Bitset(N).initEmpty();
+            inline for (values) |v| {
+                const type_info = @typeInfo(@TypeOf(v));
+                const T = switch (type_info) {
+                    .Pointer => |info| info.child,
+                    else => @TypeOf(v),
+                };
+
+                if (T == EntityID) {
+                    continue;
                 }
 
+                const i = getComponentIndex(T) orelse return error.ComponentNotFound;
+                bitset.set(i);
+            }
+
+            while (archetype_iters.next()) |archetype| {
+                if (!archetype.type.isOtherSubset(bitset)) {
+                    continue;
+                }
+
+                const first_row = archetype.columns.values()[0];
+                const rows: usize = first_row.count;
                 for (0..rows) |row| {
+                    var c_i: usize = 0;
                     inline for (values, 0..) |v, i| {
                         const type_info = @typeInfo(@TypeOf(v));
                         const T = switch (type_info) {
                             .Pointer => |info| info.child,
                             else => @TypeOf(v),
                         };
-                        const component_index = getComponentIndex(T) orelse
-                            return error.ComponentNotPresent;
+
+                        if (T == EntityID) {
+                            values[i] = first_row.entity_ids.items[row];
+                            continue;
+                        }
+
+                        const component_index = bitset.set_bits[c_i];
                         const c = archetype.columns.getPtr(component_index) orelse
                             return error.ComponentNotInArchetype;
                         const bytes = c.get(row) orelse return error.ErrorFetchingRow;
@@ -338,6 +359,7 @@ pub fn ECS(comptime components: []const type) type {
                             .Pointer => value,
                             else => value.*,
                         };
+                        c_i += 1;
                     }
                     @call(.auto, callback, values);
                 }
@@ -494,8 +516,8 @@ test "ecs" {
         }
     }.f;
     const f2 = struct {
-        pub fn f2(v: Vec2, n: Name) void {
-            std.debug.print("v is {any} and name {s}\n", .{ v, n.name });
+        pub fn f2(e: EntityID, v: Vec2, n: Name) void {
+            std.debug.print("entity {} v is {any} and name {s}\n", .{ e, v, n.name });
         }
     }.f2;
 
@@ -568,6 +590,10 @@ test "ecs" {
     std.debug.print("search:\n", .{});
     try ecs.search(f);
     std.debug.print("search end\n", .{});
+
+    std.debug.print("\nsearch 2:\n", .{});
+    try ecs.search(f2);
+    std.debug.print("search end\n\n", .{});
 
     try ecs.removeComponent(entity, Vec2);
     try ecs.removeComponent(entity3, Vec2);
