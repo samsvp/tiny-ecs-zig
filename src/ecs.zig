@@ -4,6 +4,7 @@ const Bitset = @import("bitset.zig").Bitset;
 pub const EntityID = usize;
 const ComponentID = usize;
 const ArchetypeID = usize;
+const ComponentData = std.AutoArrayHashMapUnmanaged(ComponentID, []const u8);
 
 const TypeInfo = struct {
     name: []const u8,
@@ -13,33 +14,28 @@ const TypeInfo = struct {
 // type erased component column
 const Column = struct {
     bytes: std.ArrayListUnmanaged(u8) = .{},
-    entity_ids: std.ArrayListUnmanaged(EntityID) = .{},
     type_info: TypeInfo,
     count: usize = 0,
 
     pub fn deinit(self: *Column, allocator: std.mem.Allocator) void {
         self.bytes.deinit(allocator);
-        self.entity_ids.deinit(allocator);
     }
 
     pub fn add(
         self: *Column,
         allocator: std.mem.Allocator,
         value: anytype,
-        entity_id: EntityID,
     ) !usize {
         const bytes = std.mem.asBytes(&value);
-        return self.addBytes(allocator, bytes, entity_id);
+        return self.addBytes(allocator, bytes);
     }
 
     pub fn addBytes(
         self: *Column,
         allocator: std.mem.Allocator,
         bytes: []const u8,
-        entity_id: EntityID,
     ) !usize {
         try self.bytes.appendSlice(allocator, bytes);
-        try self.entity_ids.append(allocator, entity_id);
         self.count += 1;
         return self.count - 1;
     }
@@ -56,12 +52,13 @@ const Column = struct {
         const bytes = std.mem.asBytes(&value);
         const element_size = self.type_info.size;
         const offset = row * element_size;
+        std.debug.print("my name is {s}\n", .{self.type_info.name});
         @memcpy(self.bytes.items[offset .. offset + element_size], bytes.ptr);
     }
 
-    pub fn remove(self: *Column, index: usize) !EntityID {
+    pub fn remove(self: *Column, index: usize) void {
         if (index >= self.count) {
-            return error.EntityNotFound;
+            return;
         }
 
         self.count -= 1;
@@ -75,9 +72,6 @@ const Column = struct {
             );
         }
         self.bytes.items.len -= element_size;
-        const e_id = self.entity_ids.getLast();
-        _ = self.entity_ids.swapRemove(index);
-        return e_id;
     }
 
     pub fn get(self: *Column, index: usize) ?[]u8 {
@@ -125,6 +119,7 @@ pub fn ECS(comptime components: []const type) type {
         const Archetype = struct {
             type: Bitset(N),
             columns: std.AutoArrayHashMapUnmanaged(ComponentID, Column),
+            entity_ids: std.ArrayListUnmanaged(EntityID) = .{},
 
             pub fn init(allocator: std.mem.Allocator, bitset: Bitset(N)) !Archetype {
                 var columns: std.AutoArrayHashMapUnmanaged(ComponentID, Column) = .{};
@@ -138,6 +133,61 @@ pub fn ECS(comptime components: []const type) type {
                 return .{
                     .type = bitset,
                     .columns = columns,
+                };
+            }
+
+            pub fn deinit(self: *Archetype, allocator: std.mem.Allocator) void {
+                for (self.columns.values()) |*c| {
+                    c.deinit(allocator);
+                }
+                self.entity_ids.deinit(allocator);
+                self.columns.deinit(allocator);
+            }
+
+            pub fn add(
+                self: *Archetype,
+                allocator: std.mem.Allocator,
+                entity: EntityID,
+                data: ComponentData,
+            ) !usize {
+                if (self.type.set_len > 0) {
+                    for (data.keys(), data.values()) |component_idx, d| {
+                        var column = self.columns.getPtr(component_idx).?;
+                        _ = try column.addBytes(allocator, d);
+                    }
+                }
+                try self.entity_ids.append(allocator, entity);
+                return self.entity_ids.items.len - 1;
+            }
+
+            pub fn move(
+                self: *Archetype,
+                allocator: std.mem.Allocator,
+                new_archetype: *Archetype,
+                component: anytype,
+                index: usize,
+            ) !Record {
+                const bitset = self.type.set_bits[0..self.type.set_len];
+                if (bitset.len > 0) {
+                    for (self.columns.values(), bitset) |*column, b| {
+                        const bytes = column.get(index) orelse continue;
+                        if (new_archetype.columns.getPtr(b)) |new_column| {
+                            _ = try new_column.addBytes(allocator, bytes);
+                        }
+                        column.remove(index);
+                    }
+                }
+                if (@TypeOf(component) != @TypeOf(null)) {
+                    const component_index = getComponentIndex(@TypeOf(component)).?;
+                    const c = new_archetype.columns.getPtr(component_index).?;
+                    const bytes = std.mem.asBytes(&component);
+                    _ = try c.addBytes(allocator, bytes);
+                }
+                const entity = self.entity_ids.swapRemove(index);
+                try new_archetype.entity_ids.append(allocator, entity);
+                return Record{
+                    .archetype = new_archetype,
+                    .row = new_archetype.entity_ids.items.len - 1,
                 };
             }
         };
@@ -216,10 +266,7 @@ pub fn ECS(comptime components: []const type) type {
         pub fn deinit(self: *Self) void {
             var ai_iter = self.archetype_index.valueIterator();
             while (ai_iter.next()) |v| {
-                for (v.columns.values()) |*column| {
-                    column.deinit(self.allocator);
-                }
-                v.columns.deinit(self.allocator);
+                v.deinit(self.allocator);
             }
 
             self.entity_index.deinit(self.allocator);
@@ -245,10 +292,8 @@ pub fn ECS(comptime components: []const type) type {
                 break :blk self.archetype_index.getPtr(bitset).?;
             };
 
-            var column = void_archetype.*.columns.getPtr(0).?;
-
             // add to records
-            const row = try column.add(self.allocator, {}, self.entity_counter);
+            const row = try void_archetype.add(self.allocator, self.entity_counter, .{});
             try self.entity_index.put(self.allocator, self.entity_counter, Record{
                 .archetype = void_archetype,
                 .row = row,
@@ -333,8 +378,7 @@ pub fn ECS(comptime components: []const type) type {
                     continue;
                 }
 
-                const first_row = archetype.columns.values()[0];
-                const rows: usize = first_row.count;
+                const rows: usize = archetype.entity_ids.items.len;
                 for (0..rows) |row| {
                     var c_i: usize = 0;
                     inline for (values, 0..) |v, i| {
@@ -345,7 +389,7 @@ pub fn ECS(comptime components: []const type) type {
                         };
 
                         if (T == EntityID) {
-                            values[i] = first_row.entity_ids.items[row];
+                            values[i] = archetype.entity_ids.items[row];
                             continue;
                         }
 
@@ -380,60 +424,36 @@ pub fn ECS(comptime components: []const type) type {
                 return;
             }
 
-            var old_archetype = old_record.archetype;
-
-            // remove from empty archetype
-            if (bitset.set_len == 0) {
-                var c = old_archetype.columns.getPtr(0).?;
-                const moved_entity_id = try c.remove(old_record.row);
-                if (moved_entity_id != entity) {
-                    const moved_record = self.entity_index.getPtr(moved_entity_id).?;
-                    moved_record.*.row = old_record.row;
-                }
-            }
-
-            bitset.set(component_index);
-
             // get or create the new archetype
-            var new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
+            bitset.set(component_index);
+            const new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
                 const archetype = try Archetype.init(self.allocator, bitset);
                 try self.archetype_index.put(self.allocator, bitset, archetype);
                 break :blk self.archetype_index.getPtr(bitset).?;
             };
 
-            // remove components from old archetype to new one
-            // and update moved recods rows.
-            for (bitset.set_bits[0..bitset.set_len]) |i| {
-                var c = old_archetype.columns.getPtr(i) orelse {
-                    var new_column = new_archetype.columns.getPtr(i).?;
-                    const row = try new_column.add(self.allocator, component, entity);
-                    const new_record = Record{
-                        .archetype = new_archetype,
-                        .row = row,
-                    };
+            const last_entity = old_record.archetype.entity_ids.getLast();
+            try self.entity_index.put(self.allocator, last_entity, old_record);
 
-                    try self.entity_index.put(self.allocator, entity, new_record);
-                    continue;
-                };
-                // get column and move it to new archetype
-                const bytes = c.get(old_record.row).?;
-                var new_column = new_archetype.columns.getPtr(i).?;
-                _ = try new_column.addBytes(self.allocator, bytes, entity);
-
-                // remove column
-                const moved_entity_id = try c.remove(old_record.row);
-                if (moved_entity_id == entity) {
-                    continue;
-                }
-                const moved_record = self.entity_index.getPtr(moved_entity_id).?;
-                moved_record.row = old_record.row;
-            }
+            const new_record = try old_record.archetype.move(
+                self.allocator,
+                new_archetype,
+                component,
+                old_record.row,
+            );
+            try self.entity_index.put(self.allocator, entity, new_record);
         }
 
-        pub fn removeComponent(self: *Self, entity: EntityID, comptime Component: type) !void {
-            const component_index = getComponentIndex(Component) orelse return error.NoSuchComponent;
+        pub fn removeComponent(
+            self: *Self,
+            entity: EntityID,
+            comptime Component: type,
+        ) !void {
+            const component_index = getComponentIndex(Component) orelse
+                return error.NoComponent;
 
-            const old_record = self.entity_index.get(entity) orelse return error.EntityNotPresent;
+            const old_record = self.entity_index.get(entity) orelse
+                return error.NoEntity;
             const old_bitset = old_record.archetype.type;
             var bitset = old_bitset.clone();
             // doesn't have component
@@ -441,61 +461,24 @@ pub fn ECS(comptime components: []const type) type {
                 return;
             }
 
-            var old_archetype = old_record.archetype;
-
             bitset.unset(component_index);
 
-            var new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
+            const new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
                 const archetype = try Archetype.init(self.allocator, bitset);
                 try self.archetype_index.put(self.allocator, bitset, archetype);
                 break :blk self.archetype_index.getPtr(bitset).?;
             };
 
-            var maybe_row: ?usize = null;
-            // remove components from old archetype to new one
-            // and update moved records rows.
-            for (old_bitset.set_bits[0..old_bitset.set_len]) |i| {
-                var c = old_archetype.columns.getPtr(i).?;
-                const bytes = c.get(old_record.row).?;
+            const last_entity = old_record.archetype.entity_ids.getLast();
+            try self.entity_index.put(self.allocator, last_entity, old_record);
 
-                defer {
-                    // remove value from column
-                    const moved_entity_id = c.remove(old_record.row) catch unreachable;
-                    if (moved_entity_id != entity) {
-                        const moved_record = self.entity_index.getPtr(moved_entity_id).?;
-                        moved_record.row = old_record.row;
-                    }
-                }
-
-                // if the column is not present, then ignore
-                var new_column = new_archetype.columns.getPtr(i) orelse {
-                    continue;
-                };
-
-                // move data to new archetype
-                maybe_row = try new_column.addBytes(self.allocator, bytes, entity);
-                if (maybe_row) |row| {
-                    const new_record = Record{
-                        .archetype = new_archetype,
-                        .row = row,
-                    };
-                    try self.entity_index.put(self.allocator, entity, new_record);
-                }
-            }
-
-            if (maybe_row) |_| {
-                return;
-            }
-
-            // empty archetype
-            var c = new_archetype.columns.getPtr(0).?;
-            const new_record = Record{
-                .archetype = new_archetype,
-                .row = c.count,
-            };
-
+            const new_record = try old_record.archetype.move(
+                self.allocator,
+                new_archetype,
+                null,
+                old_record.row,
+            );
             try self.entity_index.put(self.allocator, entity, new_record);
-            c.count += 1;
         }
     };
 }

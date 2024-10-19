@@ -134,11 +134,18 @@ test "ecs" {
     try ecs.search(f2);
     std.debug.print("search end\n\n", .{});
 
-    try ecs.removeComponent(entity, Vec2);
     try ecs.removeComponent(entity3, Vec2);
     if (ecs.getComponent(entity3, Name)) |v| {
         try std.testing.expectEqual(Name{ .name = "pablo" }, v.*);
     } else {
         try std.testing.expect(false);
     }
+
+    if (ecs.getComponent(entity, Vec2)) |v| {
+        try std.testing.expectEqual(Vec2{ .x = 2, .y = 4 }, v.*);
+    } else {
+        try std.testing.expect(false);
+    }
+
+    try ecs.removeComponent(entity, Vec2);
 }
