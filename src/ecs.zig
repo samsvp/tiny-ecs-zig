@@ -437,9 +437,11 @@ pub fn ECS(comptime components: []const type) type {
 
         pub fn addComponent(self: *Self, entity: EntityID, component: anytype) !void {
             const Component = @TypeOf(component);
-            const component_index = getComponentIndex(Component) orelse return error.NoSuchComponent;
+            const component_index = getComponentIndex(Component) orelse
+                return error.NoSuchComponent;
 
-            const old_record = self.entity_index.get(entity) orelse return error.EntityNotPresent;
+            const old_record = self.entity_index.get(entity) orelse
+                return error.EntityNotPresent;
             var bitset = old_record.archetype.type.clone();
             // update component
             if (bitset.isSet(component_index)) {
@@ -460,10 +462,10 @@ pub fn ECS(comptime components: []const type) type {
             comptime Component: type,
         ) !void {
             const component_index = getComponentIndex(Component) orelse
-                return error.NoComponent;
+                return error.NoSuchComponent;
 
             const old_record = self.entity_index.get(entity) orelse
-                return error.NoEntity;
+                return error.EntityNotPresent;
             const old_bitset = old_record.archetype.type;
             var bitset = old_bitset.clone();
             // doesn't have component
