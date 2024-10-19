@@ -410,22 +410,13 @@ pub fn ECS(comptime components: []const type) type {
             }
         }
 
-        pub fn addComponent(self: *Self, entity: EntityID, component: anytype) !void {
-            const Component = @TypeOf(component);
-            const component_index = getComponentIndex(Component) orelse return error.NoSuchComponent;
-
-            const old_record = self.entity_index.get(entity) orelse return error.EntityNotPresent;
-            var bitset = old_record.archetype.type.clone();
-            // update component
-            if (bitset.isSet(component_index)) {
-                const archetype = old_record.archetype;
-                var c = archetype.columns.getPtr(component_index).?;
-                try c.update(component, old_record.row);
-                return;
-            }
-
-            // get or create the new archetype
-            bitset.set(component_index);
+        fn move(
+            self: *Self,
+            entity: EntityID,
+            component: anytype,
+            bitset: Bitset(N),
+            old_record: Record,
+        ) !void {
             const new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
                 const archetype = try Archetype.init(self.allocator, bitset);
                 try self.archetype_index.put(self.allocator, bitset, archetype);
@@ -442,6 +433,25 @@ pub fn ECS(comptime components: []const type) type {
                 old_record.row,
             );
             try self.entity_index.put(self.allocator, entity, new_record);
+        }
+
+        pub fn addComponent(self: *Self, entity: EntityID, component: anytype) !void {
+            const Component = @TypeOf(component);
+            const component_index = getComponentIndex(Component) orelse return error.NoSuchComponent;
+
+            const old_record = self.entity_index.get(entity) orelse return error.EntityNotPresent;
+            var bitset = old_record.archetype.type.clone();
+            // update component
+            if (bitset.isSet(component_index)) {
+                const archetype = old_record.archetype;
+                var c = archetype.columns.getPtr(component_index).?;
+                try c.update(component, old_record.row);
+                return;
+            }
+
+            // get or create the new archetype
+            bitset.set(component_index);
+            try self.move(entity, component, bitset, old_record);
         }
 
         pub fn removeComponent(
@@ -462,23 +472,7 @@ pub fn ECS(comptime components: []const type) type {
             }
 
             bitset.unset(component_index);
-
-            const new_archetype = self.archetype_index.getPtr(bitset) orelse blk: {
-                const archetype = try Archetype.init(self.allocator, bitset);
-                try self.archetype_index.put(self.allocator, bitset, archetype);
-                break :blk self.archetype_index.getPtr(bitset).?;
-            };
-
-            const last_entity = old_record.archetype.entity_ids.getLast();
-            try self.entity_index.put(self.allocator, last_entity, old_record);
-
-            const new_record = try old_record.archetype.move(
-                self.allocator,
-                new_archetype,
-                null,
-                old_record.row,
-            );
-            try self.entity_index.put(self.allocator, entity, new_record);
+            try self.move(entity, null, bitset, old_record);
         }
     };
 }
